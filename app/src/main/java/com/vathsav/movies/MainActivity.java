@@ -1,212 +1,355 @@
-package com.vathsav.movies;
+package com.vathsav.canopy;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.ProgressDialog;
-import android.net.Uri;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.AsyncTask;
+import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
-import android.widget.GridView;
+import android.view.View;
+import android.view.WindowManager;
+import android.view.animation.Animation;
+import android.view.animation.TranslateAnimation;
+import android.widget.TextView;
+import android.widget.Toast;
 
-import com.vathsav.movies.support.GridAdapter;
-import com.vathsav.movies.support.GridItem;
+import com.vathsav.canopy.database.DatabaseHandler;
+import com.vathsav.canopy.database.Order;
+import com.vathsav.canopy.menu.cart.CartItem;
+import com.vathsav.canopy.support.JSONParser;
+import com.vathsav.canopy.support.SessionManager;
 
+import org.apache.http.NameValuePair;
+import org.apache.http.message.BasicNameValuePair;
 import org.json.JSONArray;
-import org.json.JSONException;
 import org.json.JSONObject;
+import org.w3c.dom.Text;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 
 
-public class MainActivity extends Activity {
+public class PaymentActivity extends Activity {
 
-    // Variables for AsyncTask
+    // Session Tags
+    public static final String KEY_NAME = "name";
+    public static final String KEY_REGISTER_NUMBER = "registerNumber";
+    public static final String KEY_HOSTEL = "hostel";
+    public static final String KEY_ROOM_NUMBER = "roomNumber";
+    private static final String TAG_DETAILS = "details";
+    private static final String TAG_BALANCE = "wallet_balance";
+
+    // Data insertion
+    // JSON node names
+    private static final String TAG_SUCCESS = "success";
+    int orderTotal = 0;
+
+    // Fetch wallet balance
+    String url_fetch_wallet_balance = "http://www.vathsav.com/canopy/php/fetch_wallet_balance.php";
+    String walletBalance = "";
+    TextView txtWalletBalance, txtOrderTotal, txtRemainingBalance;
+    String session_registerNumber;
+    SessionManager session;
+    HashMap<String, String> userDetails;
+
+    // Server config variables
+    JSONParser jsonParser = new JSONParser();
+    String url_insert_order = "http://www.vathsav.com/canopy/php/insert_food_order.php";
     ProgressDialog progressDialog;
-    ArrayList<GridItem> gridContentArray;
-    String jsonResponse = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-        if (savedInstanceState == null || !savedInstanceState.containsKey("JSON Response")) {
-            gridContentArray = new ArrayList<GridItem>();
-            new FetchData().execute("");
+
+
+        //todo alllow flags
+        //getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
+        setContentView(R.layout.activity_payment);
+        getActionBar().setDisplayHomeAsUpEnabled(true);
+
+        findViewById(R.id.payment_pay_now).setVisibility(View.INVISIBLE);
+        findViewById(R.id.payment_roomDetailsLayout).setVisibility(View.INVISIBLE);
+
+        // Get session credentials
+        session = new SessionManager(getApplication());
+        userDetails = session.getUserDetails();
+        final String registerNumber = userDetails.get(KEY_REGISTER_NUMBER);
+        final String name = userDetails.get(KEY_NAME);
+        final String delivery = userDetails.get(KEY_HOSTEL) + " " + userDetails.get(KEY_ROOM_NUMBER);
+
+        session_registerNumber = registerNumber;
+
+        txtWalletBalance = (TextView) findViewById(R.id.payment_txtBalance);
+        txtRemainingBalance = (TextView) findViewById(R.id.payment_txtRemainingBalance);
+        txtOrderTotal = (TextView) findViewById(R.id.payment_orderTotal);
+
+        // Balance
+
+        if (isNetworkAvailable()) {
+            // todo remove this
+            new FetchWalletDetails(session_registerNumber).execute();
         } else {
-            gridContentArray = savedInstanceState.getParcelableArrayList("JSON Response");
-            GridAdapter gridAdapter = new GridAdapter(MainActivity.this, gridContentArray);
-            ((GridView) findViewById(R.id.gridView)).setAdapter(gridAdapter);
-            gridAdapter.notifyDataSetChanged();
+            Toast.makeText(getApplicationContext(), "Unable to establish connection to the internet", Toast.LENGTH_SHORT).show();
+        }
+
+        // Order Total
+        // Fetch order from local DB
+        DatabaseHandler db = new DatabaseHandler(this);
+        List<Order> orderList = db.getAllItems();
+
+        String orderDetails = "";
+
+        for (Order order : orderList) {
+            String log = "Item: " + order.getName() + ", Price: " + order.getPrice() + ", Quantity: " + order.getQuantity();
+            Log.d("DB: ", log);
+
+            if (orderDetails.isEmpty()) {
+                orderDetails = log;
+            } else {
+                orderDetails = orderDetails + "\n" + log;
+            }
+            if (Integer.parseInt(order.getQuantity()) != 0) {
+                int price = Integer.parseInt(order.getPrice()) / Integer.parseInt(order.getQuantity());
+                orderTotal = orderTotal + price;
+            }
+        }
+
+        findViewById(R.id.payment_radio_button_room_delivery).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (checkIfHostler()) {
+                    findViewById(R.id.payment_roomDetailsLayout).setVisibility(View.VISIBLE);
+                    showPayButton();
+                } else {
+                    Toast.makeText(getApplicationContext(), "This feature is available only for hostlers", Toast.LENGTH_LONG).show();
+                    findViewById(R.id.payment_roomDetailsLayout).setVisibility(View.INVISIBLE);
+                }
+            }
+        });
+
+        findViewById(R.id.payment_radio_button_counter).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                findViewById(R.id.payment_roomDetailsLayout).setVisibility(View.INVISIBLE);
+                showPayButton();
+            }
+        });
+
+        final String details = orderDetails;
+
+        // If make payment button is clicked
+
+        findViewById(R.id.payment_pay_now).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                new AlertDialog.Builder(PaymentActivity.this)
+                        .setTitle("Payment Confirmation")
+                        .setMessage("Are you sure?")
+                        .setPositiveButton(R.string.payment_yes, new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                TextView remainingBalance = (TextView) findViewById(R.id.payment_txtRemainingBalance);
+                                int balance = Integer.parseInt(remainingBalance.getText().toString().substring(2));
+                                if (isNetworkAvailable()) {
+                                    if (balance > -1) {
+                                        InsertOrder insertOrder = new InsertOrder(registerNumber, name, details, delivery);
+                                        insertOrder.execute();
+                                    } else {
+                                        Toast.makeText(getApplicationContext(), "Insufficient balance. Cannot place order.", Toast.LENGTH_LONG).show();
+                                    }
+                                } else {
+                                    Toast.makeText(getApplicationContext(), "Unable to connect to the internet. Try again.", Toast.LENGTH_SHORT).show();
+                                }
+                            }
+                        })
+                        .setNegativeButton(R.string.payment_no, new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                // Do nothing
+                            }
+                        })
+                        .show();
+            }
+        });
+    }
+
+    private void showPayButton() {
+        findViewById(R.id.payment_pay_now).setVisibility(View.VISIBLE);
+        TranslateAnimation animation = new TranslateAnimation(
+                Animation.ABSOLUTE, 0, Animation.ABSOLUTE, 0,
+                Animation.ABSOLUTE, 300, Animation.ABSOLUTE, 0
+        );
+        animation.setDuration(500);
+        findViewById(R.id.payment_pay_now).setAnimation(animation);
+    }
+
+    private boolean checkIfHostler() {
+        if (userDetails.get(KEY_HOSTEL) != "Day Scholar") {
+            TextView txtHostel = (TextView) findViewById(R.id.payment_hostel);
+            TextView txtRoomNumber = (TextView) findViewById(R.id.payment_room_number);
+            txtHostel.setText(userDetails.get(KEY_HOSTEL));
+            txtRoomNumber.setText(userDetails.get(KEY_ROOM_NUMBER));
+            return true;
+        } else {
+            return false;
         }
     }
 
+    private boolean isNetworkAvailable() {
+        ConnectivityManager connectivityManager
+                = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
+        return activeNetworkInfo != null && activeNetworkInfo.isConnected();
+    }
+
+    // todo make this page efficient. Not satifisfied
+
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.menu_main, menu);
         return true;
     }
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         int id = item.getItemId();
-
-        if (id == R.id.action_rating) {
-            new FetchData().execute("vote_average.desc");
-            return true;
-        } else if (id == R.id.action_popularity) {
-            new FetchData().execute("popularity.desc");
-            return true;
+        switch (id) {
+            case android.R.id.home:
+                finish();
+                break;
         }
-
         return super.onOptionsItemSelected(item);
     }
 
-    private String[] parseJSON(String jsonResponse) throws JSONException {
-        final String movie_results = "results";
-        final String movie_title = "original_title";
-        final String movie_release_date = "release_date";
-        final String movie_poster_path = "poster_path";
-        final String movie_rating = "vote_average";
-        final String movie_overview = "overview";
+    public class InsertOrder extends AsyncTask<String, String, Boolean> {
 
-        JSONObject jsonMovieObject = new JSONObject(jsonResponse);
-        JSONArray jsonArray = jsonMovieObject.getJSONArray(movie_results);
+        private final String register_number;
+        private final String name;
+        private final String orderDetails;
+        private final String delivery;
 
-        int numberOfResults;
-        if (jsonArray != null)
-            numberOfResults = jsonArray.length();
-        else
-            numberOfResults = 0;
-
-        gridContentArray = new ArrayList<GridItem>();
-
-        for (int i = 0; i < numberOfResults; i++) {
-            String title;
-            String release_date;
-            String poster_path;
-            String rating;
-            String overview;
-
-            JSONObject movie = jsonArray.getJSONObject(i);
-            title = String.valueOf(movie.getString(movie_title));
-            release_date = String.valueOf(movie.getString(movie_release_date));
-            poster_path = String.valueOf(movie.getString(movie_poster_path));
-            rating = String.valueOf(movie.getString(movie_rating));
-            overview = String.valueOf(movie.getString(movie_overview));
-
-            gridContentArray.add(new GridItem(title, release_date, rating, poster_path, overview));
+        InsertOrder(String _registerNumber, String _name, String _orderDetails, String _delivery) {
+            register_number = _registerNumber;
+            name = _name;
+            orderDetails = _orderDetails;
+            delivery = _delivery;
         }
-        return new String[12];
-    }
-
-    @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        outState.putParcelableArrayList("JSON Response", gridContentArray);
-        super.onSaveInstanceState(outState);
-    }
-
-    public class FetchData extends AsyncTask<String, Void, String[]> {
 
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
-            progressDialog = new ProgressDialog(MainActivity.this);
-            progressDialog.setMessage("Fetching Movies");
-            progressDialog.setCancelable(true);
+            progressDialog = new ProgressDialog(PaymentActivity.this);
+            progressDialog.setMessage("Processing your order..");
+            progressDialog.setIndeterminate(false);
+            progressDialog.setCancelable(false);
             progressDialog.show();
         }
 
         @Override
-        protected String[] doInBackground(String... params) {
-            HttpURLConnection httpURLConnection = null;
-            BufferedReader bufferedReader = null;
+        protected Boolean doInBackground(String... args) {
+            int success;
 
-            // Query vars
-            String apiKey = "f1cd8e955ce536c89bfa7aa2726cbc55";
-            String sortBy = params[0];
+            List<NameValuePair> params = new ArrayList<>();
+            params.add(new BasicNameValuePair("register_number", register_number));
+            params.add(new BasicNameValuePair("name", name));
+            params.add(new BasicNameValuePair("details", orderDetails));
+            params.add(new BasicNameValuePair("delivery", delivery));
+            JSONObject json = jsonParser.makeHttpRequest(url_insert_order, "POST", params);
 
             try {
-                // Query parameters
-                final String url = "http://api.themoviedb.org/3/discover/movie?";
-                final String sort = "sort_by";
-                final String api = "api_key";
-
-                Uri uri;
-                if (sortBy.isEmpty()) {
-                    uri = Uri.parse(url).buildUpon()
-                            .appendQueryParameter(api, apiKey)
-                            .build();
+                success = json.getInt(TAG_SUCCESS);
+                if (success == 1) {
+                    return true;
                 } else {
-                    uri = Uri.parse(url).buildUpon()
-                            .appendQueryParameter(sort, sortBy)
-                            .appendQueryParameter(api, apiKey)
-                            .build();
+                    return false;
                 }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            return false;
+        }
 
-                URL finalURL = new URL(uri.toString());
-                Log.v("Main Activity", finalURL.toString());
-
-                httpURLConnection = (HttpURLConnection) finalURL.openConnection();
-                httpURLConnection.setRequestMethod("GET");
-                httpURLConnection.connect();
-
-                InputStream inputStream = httpURLConnection.getInputStream();
-                StringBuffer buffer = new StringBuffer();
-
-                if (inputStream == null) {
-                    return null;
-                }
-
-                bufferedReader = new BufferedReader(new InputStreamReader(inputStream));
-
-                String jsonText;
-
-                while ((jsonText = bufferedReader.readLine()) != null) {
-                    buffer.append(jsonText);
-                }
-
-                if (buffer.length() == 0) {
-                    return null;
-                }
-
-                jsonResponse = buffer.toString();
-            } catch (IOException ex) {
-                Log.e("Main Activity", "Error ", ex);
-            } finally {
-                if (httpURLConnection != null) {
-                    httpURLConnection.disconnect();
-                }
-                if (bufferedReader != null) {
-                    try {
-                        bufferedReader.close();
-                    } catch (IOException ex) {
-                        Log.e("Main Activity", "Error ", ex);
+        protected void onPostExecute(final Boolean success) {
+            if (success) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        DatabaseHandler databaseHandler = new DatabaseHandler(getApplicationContext());
+                        databaseHandler.deleteAll();
+                        Intent showHomeActivity = new Intent("com.vathsav.canopy.HOME");
+                        startActivity(showHomeActivity);
+                        finish();
+                        Toast.makeText(getApplicationContext(), "Your order has been placed!", Toast.LENGTH_LONG).show();
                     }
-                }
+                });
+            } else {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(getApplicationContext(), "Your order couldn't be placed. An error occurred.", Toast.LENGTH_LONG).show();
+                    }
+                });
             }
+            progressDialog.dismiss();
+        }
+    }
 
-            try {
-                parseJSON(jsonResponse);
-            } catch (JSONException ex) {
-                Log.e("Error: ", ex.getMessage());
-            }
-            return new String[0];
+    public class FetchWalletDetails extends AsyncTask<String, String, Boolean> {
+
+        private final String register_number;
+
+        FetchWalletDetails(String registerNumber) {
+            register_number = registerNumber;
         }
 
         @Override
-        protected void onPostExecute(String[] strings) {
-            super.onPostExecute(strings);
-            GridAdapter gridAdapter = new GridAdapter(MainActivity.this, gridContentArray);
-            ((GridView) findViewById(R.id.gridView)).setAdapter(gridAdapter);
-            gridAdapter.notifyDataSetChanged();
+        protected void onPreExecute() {
+            super.onPreExecute();
+            progressDialog = new ProgressDialog(PaymentActivity.this);
+            progressDialog.setMessage("Contacting server..");
+            progressDialog.setIndeterminate(false);
+            progressDialog.setCancelable(false);
+            progressDialog.show();
+        }
+
+        @Override
+        protected Boolean doInBackground(String... args) {
+            int success;
+
+            List<NameValuePair> params = new ArrayList<>();
+            params.add(new BasicNameValuePair("register_number", register_number));
+            JSONObject json = jsonParser.makeHttpRequest(url_fetch_wallet_balance, "GET", params);
+            try {
+                success = json.getInt(TAG_SUCCESS);
+                if (success == 1) {
+                    JSONArray result = json.getJSONArray(TAG_DETAILS);
+                    JSONObject details = result.getJSONObject(0);
+                    walletBalance = details.getString(TAG_BALANCE);
+                    Log.d("Async Task: ", walletBalance);
+                    return true;
+                } else {
+                    return false;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            return false;
+        }
+
+        protected void onPostExecute(final Boolean success) {
+            txtWalletBalance.setText("₹ " + walletBalance);
+            txtOrderTotal.setText("₹ " + orderTotal);
+            txtRemainingBalance.setText("₹ " + String.valueOf(
+                            Integer.parseInt(txtWalletBalance.getText().toString().substring(2)) -
+                                    Integer.parseInt(txtOrderTotal.getText().toString().substring(2))
+                    )
+            );
             progressDialog.dismiss();
         }
     }
