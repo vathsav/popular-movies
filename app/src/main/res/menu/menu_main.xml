@@ -1,0 +1,8 @@
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools" tools:context="com.vathsav.movies.MainActivity">
+    <item android:id="@+id/action_popularity" android:title="@string/action_sort_popularity"
+        android:orderInCategory="1" app:showAsAction="never" />
+    <item android:id="@+id/action_rating" android:title="@string/action_sort_rating"
+    android:orderInCategory="2" app:showAsAction="never" />
+</menu>

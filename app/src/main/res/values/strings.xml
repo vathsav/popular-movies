@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Movies</string>
+    <string name="title_activity_main">Movies</string>
+    <string name="title_activity_movie_details">Description</string>
+
+    <string name="action_sort_popularity">Sort by Popularity</string>
+    <string name="action_sort_rating">Sort by Rating</string>
+</resources>
